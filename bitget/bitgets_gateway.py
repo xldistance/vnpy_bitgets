@@ -266,7 +266,7 @@ class BitGetSRestApi(RestClient):
         self.account_date = None   #账户日期
         self.accounts_info:Dict[str,dict] = {}
         self.all_contracts:List[str] = []          #所有vt_symbol合约列表
-        self.product_types = ["umcbl","cmcbl"]   # USDT,USDC合约
+        self.product_types = ["umcbl","cmcbl","dmcbl"]   # USDT,USDC,币本位合约
         self.product_coin_map = {
             "UMCBL": "USDT",
             "CMCBL": "USDC",
@@ -328,8 +328,10 @@ class BitGetSRestApi(RestClient):
         """
         获取保证金币种
         """
-        coin = symbol.split("_")[1]
-        margin_coin = self.product_coin_map[coin]
+        product_type = symbol.split("_")[1]
+        margin_coin = self.product_coin_map.get(product_type,None)
+        if not margin_coin:
+            margin_coin = symbol.split("USD")[0]
         return margin_coin
     #------------------------------------------------------------------------------------------------- 
     def set_leverage(self,symbol:str):
@@ -989,10 +991,6 @@ class BitGetSTradeWebsocketApi(BitGetSWebsocketApiBase):
         """
         self.trade_count = 0
         super().__init__(gateway)
-        self.topic_func_map = {
-            "orders_cross":self.on_order,
-            "positions_cross":self.on_position
-        }
     #------------------------------------------------------------------------------------------------- 
     def connect(
         self,
@@ -1017,7 +1015,7 @@ class BitGetSTradeWebsocketApi(BitGetSWebsocketApiBase):
         """
         订阅私有频道
         """
-        inst_types = ["UMCBL","CMCBL"]  #产品类型 UMCBL:专业合约私有频道,DMCBL:混合合约私有频道,CMCBL:USDC专业合约
+        inst_types = ["UMCBL","CMCBL","DMCBL"]  #产品类型 UMCBL:专业合约私有频道,DMCBL:混合合约私有频道(币本位合约),CMCBL:USDC专业合约
         # 订阅持仓
         for inst_type in inst_types:
             req = {
