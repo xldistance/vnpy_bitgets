@@ -75,12 +75,6 @@ DIRECTION_VT2BITGETS: Dict[Direction, str] = {
 }
 DIRECTION_BITGETS2VT: Dict[str, Direction] = {v: k for k, v in DIRECTION_VT2BITGETS.items()}
 
-OFFSET_VT2BITGETS: Dict[Offset, str] = {
-    Offset.OPEN: "open",
-    Offset.CLOSE: "close",
-}
-OFFSET_BITGETS2VT: Dict[str, Offset] = {v: k for k, v in OFFSET_VT2BITGETS.items()}
-
 HOLDSIDE_BITGETS2VT: Dict[str,Direction] = {
     "long":Direction.LONG,
     "short":Direction.SHORT
@@ -713,11 +707,8 @@ class BitGetSRestApi(RestClient):
         if data["msg"] == "success":
             return False
 
-        error_code = data["err_code"]
-        error_msg = data["err_msg"]
-        # 过滤系统繁忙,合约交割时持仓结算,账户结算错误
-        if (func == "查询持仓" and error_code in [1004,1079,1080])  or (func == "查询账户" and error_code == 1078):
-            return True
+        error_code = data["code"]
+        error_msg = data["msg"]
         self.gateway.write_log(f"{func}请求出错，代码：{error_code}，信息：{error_msg}")
         return True
 
@@ -799,7 +790,7 @@ class BitGetSWebsocketApiBase(WebsocketClient):
             return
         if "event" in packet:
             if packet["event"] == "login" and packet["code"] == 0:
-                return self.on_login()
+                self.on_login()
             elif packet["event"] == "error":
                 self.on_error_msg(packet)
         else:
