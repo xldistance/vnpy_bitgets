@@ -117,6 +117,7 @@ class BitGetSGateway(BaseGateway):
         self.rest_api = BitGetSRestApi(self)
         self.trade_ws_api = BitGetSTradeWebsocketApi(self)
         self.market_ws_api = BitGetSDataWebsocketApi(self)
+        self.count = 0  #轮询计时:秒
         #所有合约列表
         self.recording_list = GetFilePath.recording_list
         self.recording_list = [vt_symbol for vt_symbol in self.recording_list if extract_vt_symbol(vt_symbol)[2] == self.gateway_name  and not extract_vt_symbol(vt_symbol)[0].endswith("99")]
@@ -225,10 +226,14 @@ class BitGetSGateway(BaseGateway):
             symbol,exchange,gateway_name = extract_vt_symbol(vt_symbol)
             self.query_order(symbol)
             self.query_contracts.append(vt_symbol)
-        self.query_account()
         if self.leverage_contracts:
             symbol = extract_vt_symbol(self.leverage_contracts.pop(0))[0]
             self.rest_api.set_leverage(symbol)
+        self.count += 1
+        if self.count < 3:
+            return
+        self.count = 0
+        self.query_account()
     #------------------------------------------------------------------------------------------------- 
     def init_query(self):
         """
@@ -903,7 +908,7 @@ class BitGetSDataWebsocketApi(BitGetSWebsocketApiBase):
                 }
             ]
         }
-        self.send_packet(req)        
+        self.send_packet(req)
     #------------------------------------------------------------------------------------------------- 
     def on_data(self, packet) -> None:
         """
@@ -1115,7 +1120,7 @@ class BitGetSTradeWebsocketApi(BitGetSWebsocketApiBase):
             )
             self.gateway.on_position(position)
 #------------------------------------------------------------------------------------------------- 
-def create_signature(secret,message):
+def create_signature(secret:str,message:str):
     mac = hmac.new(bytes(secret, encoding='utf8'), bytes(message, encoding='utf-8'), digestmod='sha256').digest()
     sign_str =  base64.b64encode(mac).decode()
     return sign_str
