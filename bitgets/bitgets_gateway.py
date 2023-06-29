@@ -11,7 +11,7 @@ from pathlib import Path
 import csv
 from copy import copy
 from datetime import datetime, timedelta
-from time import time
+from time import time,sleep
 from threading import Lock
 from typing import Dict, List, Any,Union
 from peewee import chunked
@@ -97,7 +97,6 @@ class BitGetSGateway(BaseGateway):
     """
     * bitget接口
     * 单向持仓模式
-    * 暂时无法订阅币本位交割合约行情数据(币本位交割合约instId与币本位永续合约instId无法区分)
     """
     #default_setting由vnpy.trader.ui.widget调用
     default_setting: Dict[str, Any] = {
@@ -271,6 +270,8 @@ class BitGetSRestApi(RestClient):
             "UMCBL": "USDT",
             "CMCBL": "USDC",
         }
+        self.delivery_date_map:Dict[str,str] = {}
+        self.contract_inited:bool = False
     #------------------------------------------------------------------------------------------------- 
     def sign(self, request) -> Request:
         """
@@ -619,19 +620,23 @@ class BitGetSRestApi(RestClient):
             contract = ContractData(
                 symbol=contract_data["symbol"],
                 exchange=Exchange.BITGETS,
-                name=contract_data["symbol"],
+                name=contract_data["symbolName"],
                 price_tick=float(contract_data["priceEndStep"]) * float(f"1e-{price_place}"),
                 size=20,    # 合约杠杆
                 min_volume=float(contract_data["minTradeNum"]),
                 product=Product.FUTURES,
                 gateway_name=self.gateway_name,
             )
+            # 保存交割合约名称
+            if contract.name[-1].isdigit():
+                self.delivery_date_map[contract.symbol] = contract.name
             self.gateway.on_contract(contract)
             if contract.vt_symbol not in self.all_contracts:
                 self.all_contracts.append(contract.vt_symbol)
         product_type = contract_data["supportMarginCoins"][0]
         self.gateway.on_all_contracts(self.all_contracts)  
         self.gateway.write_log(f"交易接口：{self.gateway_name}，{product_type}合约信息查询成功")
+        self.contract_inited = True
     #------------------------------------------------------------------------------------------------- 
     def on_send_order(self, data: dict, request: Request) -> None:
         """
@@ -857,6 +862,10 @@ class BitGetSDataWebsocketApi(BitGetSWebsocketApiBase):
         """
         订阅合约
         """
+        # 等待rest合约数据推送完成再订阅
+        while not self.gateway.rest_api.contract_inited:
+            sleep(1)
+
         tick = TickData(
             symbol=req.symbol,
             name=req.symbol,
@@ -864,7 +873,13 @@ class BitGetSDataWebsocketApi(BitGetSWebsocketApiBase):
             datetime=datetime.now(TZ_INFO),
             gateway_name=self.gateway_name,
         )
-        inst_id = tick.symbol.split("_")[0]
+        symbol = tick.symbol
+        
+        # 交割合约inst_id赋值
+        if symbol[-1].isdigit():
+            inst_id = self.gateway.rest_api.delivery_date_map[symbol]
+        else:
+            inst_id = symbol.split("_")[0]
         self.ticks[inst_id] = tick
         self.subscribe_data(inst_id)
     #------------------------------------------------------------------------------------------------- 
@@ -912,14 +927,14 @@ class BitGetSDataWebsocketApi(BitGetSWebsocketApiBase):
         for tick_data in data:
             inst_id = tick_data["instId"]
             tick = self.ticks[inst_id]
+            tick.name = inst_id
             tick.datetime = get_local_datetime(tick_data["systemTime"])
             tick.open_price = float(tick_data["openUtc"])
             tick.high_price = float(tick_data["high24h"])
             tick.low_price = float(tick_data["low24h"])
             tick.last_price = float(tick_data["last"])
             tick.open_interest = float(tick_data["holding"])
-
-            tick.volume = float(tick_data["baseVolume"])    #本币成交量
+            tick.volume = float(tick_data["baseVolume"])    #quoteVolume：usd成交量，baseVolume：本币成交量
             tick.bid_price_1 = float(tick_data["bestBid"])
             tick.bid_volume_1 = float(tick_data["bidSz"])
             tick.ask_price_1 = float(tick_data["bestAsk"])
@@ -989,7 +1004,7 @@ class BitGetSTradeWebsocketApi(BitGetSWebsocketApiBase):
             proxy_port
         )
     #------------------------------------------------------------------------------------------------- 
-    def subscribe(self) -> int:
+    def subscribe_private(self) -> int:
         """
         订阅私有频道
         """
@@ -1033,7 +1048,7 @@ class BitGetSTradeWebsocketApi(BitGetSWebsocketApiBase):
         """
         """
         self.gateway.write_log(f"交易接口：{self.gateway_name}，交易Websocket API登录成功")
-        self.subscribe()
+        self.subscribe_private()
     #------------------------------------------------------------------------------------------------- 
     def on_data(self, packet) -> None:
         """
