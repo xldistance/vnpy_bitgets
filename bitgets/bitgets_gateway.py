@@ -13,9 +13,9 @@ from copy import copy
 from datetime import datetime, timedelta
 from time import time
 from threading import Lock
-from typing import Sequence
-from typing import Dict, List, Any
+from typing import Dict, List, Any,Union
 from peewee import chunked
+from collections import defaultdict
 
 from vnpy.event import Event
 from vnpy.api.rest import RestClient, Request
@@ -97,6 +97,7 @@ class BitGetSGateway(BaseGateway):
     """
     * bitget接口
     * 单向持仓模式
+    * 暂时无法订阅币本位交割合约行情数据(币本位交割合约instId与币本位永续合约instId无法区分)
     """
     #default_setting由vnpy.trader.ui.widget调用
     default_setting: Dict[str, Any] = {
@@ -562,19 +563,20 @@ class BitGetSRestApi(RestClient):
             return
         accounts_info = list(self.accounts_info.values())
         account_date = accounts_info[-1]["datetime"].date()
-        account_path = GetFilePath().ctp_account_path.replace("ctp_account_1",self.gateway.account_file_name)
-        for account_data in accounts_info:
-            if not Path(account_path).exists(): # 如果文件不存在，需要写header
-                with open(account_path, 'w',newline="") as f1:          #newline=""不自动换行
-                    w1 = csv.DictWriter(f1, account_data.keys())
-                    w1.writeheader()
-                    w1.writerow(account_data)
-            else: # 文件存在，不需要写header
-                if self.account_date and self.account_date != account_date:        #一天写入一次账户信息         
-                    with open(account_path,'a',newline="") as f1:                               #a二进制追加形式写入
-                        w1 = csv.DictWriter(f1, account_data.keys())
-                        w1.writerow(account_data)
+        account_path = GetFilePath.ctp_account_path.replace("ctp_account_1",self.gateway.account_file_name)
+        write_header = not Path(account_path).exists()
+        additional_writing = self.account_date and self.account_date != account_date
         self.account_date = account_date
+        # 文件不存在则写入文件头，否则只在日期变更后追加写入文件
+        if not write_header and not additional_writing:
+            return
+        write_mode = "w" if write_header else "a"
+        for account_data in accounts_info:
+            with open(account_path, write_mode, newline="") as f1:          
+                w1 = csv.DictWriter(f1, list(account_data))
+                if write_header:
+                    w1.writeheader()
+                w1.writerow(account_data)
     #------------------------------------------------------------------------------------------------- 
     def on_query_order(self, data: dict, request: Request) -> None:
         """
@@ -788,7 +790,7 @@ class BitGetSWebsocketApiBase(WebsocketClient):
     def on_data(self, packet):
         pass
     #------------------------------------------------------------------------------------------------- 
-    def on_packet(self, packet) -> None:
+    def on_packet(self, packet:Union[str,dict]) -> None:
         """
         """
         if packet == "pong":
@@ -816,7 +818,7 @@ class BitGetSDataWebsocketApi(BitGetSWebsocketApiBase):
         """
         super().__init__(gateway)
 
-        self.ticks = {}
+        self.ticks:Dict[str,TickData] = {}
     #------------------------------------------------------------------------------------------------- 
     def connect(
         self,
@@ -842,8 +844,8 @@ class BitGetSDataWebsocketApi(BitGetSWebsocketApiBase):
         """
         self.gateway.write_log(f"交易接口：{self.gateway_name}，行情Websocket API连接成功")
 
-        for symbol in list(self.ticks.keys()):
-            self.subscribe_data(symbol)
+        for inst_id in list(self.ticks):
+            self.subscribe_data(inst_id)
     #-------------------------------------------------------------------------------------------------
     def on_disconnected(self):
         """
@@ -864,51 +866,32 @@ class BitGetSDataWebsocketApi(BitGetSWebsocketApiBase):
         )
         inst_id = tick.symbol.split("_")[0]
         self.ticks[inst_id] = tick
-
-        self.subscribe_data(tick.symbol)
+        self.subscribe_data(inst_id)
     #------------------------------------------------------------------------------------------------- 
-    def subscribe_data(self, symbol: str) -> None:
+    def topic_subscribe(self,channel:str,inst_id:str):
+        """
+        主题订阅
+        """
+        req = {
+            "op":"subscribe",
+            "args":[
+                {
+                    "instType":"MC",
+                    "channel":channel,
+                    "instId":inst_id
+                }
+            ]
+        }
+        self.send_packet(req)
+    #------------------------------------------------------------------------------------------------- 
+    def subscribe_data(self, inst_id: str) -> None:
         """
         订阅市场深度主题
         """
-        # 订阅tick
-        symbol = symbol.split("_")[0]
-        req = {
-            "op":"subscribe",
-            "args":[
-                {
-                    "instType":"MC",
-                    "channel":"ticker",
-                    "instId":symbol
-                }
-            ]
-        }
-        self.send_packet(req)
-
-        # 订阅行情深度
-        req = {
-            "op":"subscribe",
-            "args":[
-                {
-                    "instType":"MC",
-                    "channel":"books5",
-                    "instId":symbol
-                }
-            ]
-        }
-        self.send_packet(req)
-        #订阅最新成交
-        req = {
-            "op":"subscribe",
-            "args":[
-                {
-                    "instType":"MC",
-                    "channel":"tradeNew",
-                    "instId":symbol
-                }
-            ]
-        }
-        self.send_packet(req)
+        # 订阅tick，行情深度，最新成交
+        channels = ["ticker","books5","tradeNew"]
+        for channel in channels:
+            self.topic_subscribe(channel,inst_id)
     #------------------------------------------------------------------------------------------------- 
     def on_data(self, packet) -> None:
         """
@@ -927,8 +910,7 @@ class BitGetSDataWebsocketApi(BitGetSWebsocketApiBase):
         收到tick数据推送
         """
         for tick_data in data:
-            symbol = tick_data["symbolId"]
-            inst_id = symbol.split("_")[0]
+            inst_id = tick_data["instId"]
             tick = self.ticks[inst_id]
             tick.datetime = get_local_datetime(tick_data["systemTime"])
             tick.open_price = float(tick_data["openUtc"])
