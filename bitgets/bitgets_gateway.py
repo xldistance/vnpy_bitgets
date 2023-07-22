@@ -877,7 +877,7 @@ class BitGetSDataWebsocketApi(BitGetSWebsocketApiBase):
         
         # 交割合约inst_id赋值
         if symbol[-1].isdigit():
-            inst_id = self.gateway.rest_api.delivery_date_map[symbol]
+            inst_id = self.gateway.rest_api.delivery_date_map.get(symbol,"")
         else:
             inst_id = symbol.split("_")[0]
         self.ticks[inst_id] = tick
@@ -903,6 +903,9 @@ class BitGetSDataWebsocketApi(BitGetSWebsocketApiBase):
         """
         订阅市场深度主题
         """
+        # 过滤过期inst_id
+        if not inst_id:
+            return
         # 订阅tick，行情深度，最新成交
         channels = ["ticker","books5","tradeNew"]
         for channel in channels:
