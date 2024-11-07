@@ -227,15 +227,17 @@ class BitGetSGateway(BaseGateway):
             symbol, exchange, gateway_name = extract_vt_symbol(vt_symbol)
             self.rest_api.query_order(symbol)
             self.query_contracts.append(vt_symbol)
-        if self.leverage_contracts:
-            symbol = extract_vt_symbol(self.leverage_contracts.pop(0))[0]
-            self.rest_api.set_leverage(symbol)
-            self.rest_api.set_margin_mode(symbol)
+
         self.count += 1
         if self.count < 3:
             return
         self.count = 0
         self.query_account()
+        
+        if self.leverage_contracts:
+            symbol = extract_vt_symbol(self.leverage_contracts.pop(0))[0]
+            self.rest_api.set_leverage(symbol)
+            self.rest_api.set_margin_mode(symbol)
     # ----------------------------------------------------------------------------------------------------
     def init_query(self):
         """
@@ -619,6 +621,7 @@ class BitGetSRestApi(RestClient):
                 price_tick=float(contract_data["priceEndStep"]) * float(f"1e-{price_place}"),
                 size=20,  # 合约杠杆
                 min_volume=float(contract_data["minTradeNum"]),
+                max_volume=float(contract_data["maxPositionNum"]),
                 product=Product.FUTURES,
                 gateway_name=self.gateway_name,
             )
@@ -765,8 +768,6 @@ class BitGetSWebsocketApiBase(WebsocketClient):
         """ """
         msg = packet["msg"]
         self.gateway.write_log(f"交易接口：{self.gateway_name} WebSocket API收到错误回报，回报信息：{msg}")
-
-
 # ----------------------------------------------------------------------------------------------------
 class BitGetSDataWebsocketApi(BitGetSWebsocketApiBase):
     """ """
@@ -871,9 +872,7 @@ class BitGetSDataWebsocketApi(BitGetSWebsocketApiBase):
         data = packet["data"][0]
         symbol = packet["arg"]["instId"]
         tick = self.ticks[symbol]
-
         tick.datetime = get_local_datetime(int(data["ts"]))
-
         # 辅助函数，用于设置tick属性
         def set_tick_attributes(side: str, orders: list):
             attr_prefix = "bid_" if side == "bids" else "ask_"
